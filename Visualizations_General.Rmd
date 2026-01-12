@@ -1,0 +1,432 @@
+--- 
+title: "Visualizations"
+fig.align: center
+output:
+   prettydoc::html_pretty: 
+   theme: Leonids
+--- 
+
+
+```{r, include = FALSE}
+
+library(knitr)
+# knitr::opts_chunk$set(echo = FALSE, warning = FALSE)
+
+# global plot settings added
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE)
+
+# opts_chunk$set(out.width='15cm', dpi=300)
+```
+
+Notes to self:  
+- 0. three categories: required for the paper, interesting, troubleshooting  
+- 1. chunk output suppressed, see file for it  
+- 2. palette, theme, W/L for plots to be adapted later  
+- 3.   
+
+```{r, include = FALSE}
+# Old data:
+
+rm(list = ls()) #clear list
+
+# list of dependent variables for easier filtrations
+Dvariable_list = c("familychildren", "health", "social", "housing", 
+                   "oldage", "sicknessdissability", "survivors", "unemployment")
+
+'%!in%' <- function(x,y)!('%in%'(x,y))
+
+
+```
+
+```{r}
+library(knitr)
+
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(reshape2)
+library(scales)
+
+library(data.table)
+library(zoo)
+
+library(countrycode)
+library(eurostat)
+
+library(ggthemes)
+# library(hrbrthemes)
+
+library(broom)
+library(here)
+
+```
+
+```{r}
+
+data <- read.csv(file = "out/data_res.csv", row.names = 1)
+
+data$year = as.numeric(data$year)
+
+data_l <- read.csv(file = "out/data_l_res.csv", row.names = 1)
+
+country_order = c("AUT", "DEU", "POL", "CZE", 
+                                         "SWE", "DNK", "FRA", "ITA",
+                                         "ROU", "ESP", "GRC")
+                  # "ESP", "GRC")
+
+data = data %>% mutate(year = as.numeric(year))
+data_l = data_l %>% mutate(year = as.numeric(year))
+
+data = data %>% filter(ccode %in% country_order) 
+data_l = data_l %>% filter(ccode %in% country_order) 
+
+data95 = data %>% filter(year != 1995)
+data_l95 = data_l %>% filter(year != 1995)
+
+cccheck = data_l95 %>% filter(year == 1996) %>% filter(ccode == "GRC" & variable == "diff_log_social_PO")
+# cccheck = data_l %>% filter(year == 1995) %>% filter(ccode == "AUT" & variable == "diff_log_OGUSA")
+cccheckAUT = data_l %>% filter(year == 1995) %>% filter(ccode == "AUT")
+cccheck_compare = data_l %>% filter(year == 1995) %>% filter(ccode == "DEU")
+sum(is.na(cccheckAUT))
+sum(is.na(cccheck_compare))
+# seems to have been fixed
+```
+
+```{r}
+library(gtable)
+library(cowplot)
+
+shift_legend <- function(p){
+
+  # check if p is a valid object
+  if(!"gtable" %in% class(p)){
+    if("ggplot" %in% class(p)){
+      gp <- ggplotGrob(p) # convert to grob
+    } else {
+      message("This is neither a ggplot object nor a grob generated from ggplotGrob. Returning original plot.")
+      return(p)
+    }
+  } else {
+    gp <- p
+  }
+
+  # check for unfilled facet panels
+  facet.panels <- grep("^panel", gp[["layout"]][["name"]])
+  empty.facet.panels <- sapply(facet.panels, function(i) "zeroGrob" %in% class(gp[["grobs"]][[i]]))
+  empty.facet.panels <- facet.panels[empty.facet.panels]
+  if(length(empty.facet.panels) == 0){
+    message("There are no unfilled facet panels to shift legend into. Returning original plot.")
+    return(p)
+  }
+
+  # establish extent of unfilled facet panels (including any axis cells in between)
+  empty.facet.panels <- gp[["layout"]][empty.facet.panels, ]
+  empty.facet.panels <- list(min(empty.facet.panels[["t"]]), min(empty.facet.panels[["l"]]),
+                             max(empty.facet.panels[["b"]]), max(empty.facet.panels[["r"]]))
+  names(empty.facet.panels) <- c("t", "l", "b", "r")
+
+  # extract legend & copy over to location of unfilled facet panels
+  guide.grob <- which(gp[["layout"]][["name"]] == "guide-box")
+  if(length(guide.grob) == 0){
+    message("There is no legend present. Returning original plot.")
+    return(p)
+  }
+  gp <- gtable_add_grob(x = gp,
+                        grobs = gp[["grobs"]][[guide.grob]],
+                        t = empty.facet.panels[["t"]],
+                        l = empty.facet.panels[["l"]],
+                        b = empty.facet.panels[["b"]],
+                        r = empty.facet.panels[["r"]],
+                        name = "new-guide-box")
+
+  # squash the original guide box's row / column (whichever applicable)
+  # & empty its cell
+  guide.grob <- gp[["layout"]][guide.grob, ]
+  if(guide.grob[["l"]] == guide.grob[["r"]]){
+    gp <- gtable_squash_cols(gp, cols = guide.grob[["l"]])
+  }
+  if(guide.grob[["t"]] == guide.grob[["b"]]){
+    gp <- gtable_squash_rows(gp, rows = guide.grob[["t"]])
+  }
+  gp <- gtable_remove_grobs(gp, "guide-box")
+
+  return(gp)
+}
+```
+
+
+```{r}
+# grey = #86868A
+# yellow = #D48600
+# dark blue = #004872
+
+wiiw_palette = c("#86868A", "#D48600", "#004872")
+```
+
+```{r}
+# Define your custom theme
+my_theme <- function() {
+  theme_classic() +
+    theme(
+      # widths
+      text = element_text(family = "Arial", size = 8),
+      axis.line = element_line(colour = 'black', size = 0.25),
+      # facets
+      strip.text = element_text(family = "Arial Narrow", size = rel(0.75)),
+      strip.background = element_blank(),
+      # axis.text.x=element_blank(), #remove x axis labels
+      # axis.ticks.x=element_blank(), #remove x axis ticks
+      # axis.text.y=element_blank(),  #remove y axis labels
+      # axis.ticks.y=element_blank()  #remove y axis ticks
+      # ... additional theme elements
+    )
+}
+
+# Set the custom theme as the default theme
+theme_set(my_theme())
+
+# Called from outside the theme
+# update_geom_defaults("line", list(size = 3))
+```
+
+Adjustments plot
+```{r}
+data_l95$year = as.numeric(data_l95$year)
+plot = ggplot(data_l, aes(x = year, color = variable)) + 
+  geom_line(
+    data = . %>% filter(variable == paste0("diff_log_", "social", "_nomPO")),
+    aes(y = value)
+  ) +
+  geom_line(
+    data = . %>% filter(variable == paste0("diff_log_", "social", "_PO")),
+    aes(y = value)
+  ) +
+  facet_wrap(~ccode, ncol = 4, scales = "free") +
+  scale_color_manual(
+                     values = wiiw_palette,
+                     labels = c("nomPO", "PO")) +
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 4)) +
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 4)) +
+  geom_hline(yintercept=0, linetype="dashed", 
+                color = "#420C09", size=0.067) +
+  theme(legend.position = c(.88, .12)) +
+  xlab("") + ylab("")
+
+print(plot)
+# ggsave(plot, file = paste0("C:/Users/Arsenev/Documents/test.png"))
+```
+
+```{r}
+data_l95$year = as.numeric(data_l95$year)
+plot = ggplot(subset(data_l, !is.na(value)), aes(x = year, color = variable, na.rm = TRUE)) + 
+  geom_line(
+    data = . %>% filter(variable == paste0("diff_log_", "social", "_nomPO")),
+    aes(y = value)
+  ) +
+  geom_line(
+    data = . %>% filter(variable == paste0("diff_log_", "social", "_PO")),
+    aes(y = value)
+  ) +
+  facet_wrap(~ccode, ncol = 4, scales = "free")
+
+print(plot)
+
+cccheck = data_l95 %>% filter(variable == "diff_log_social_PO")
+```
+
+```{r}
+## broken
+# fixed_or_not = data_l %>% filter(str_detect(variable, "diff_log") & year == 1995 & !is.na(value))
+# # fixed_or_not = data_l %>% filter(str_detect(variable, "diff_log") & !is.na(value))
+# library(writexl)
+# write_xlsx(fixed_or_not, "C:/Users/Arsenev/Documents/fixed_or_not.xlsx")
+# fixed_or_not %>% group_by(variable) %>% summarize()
+```
+
+```{r}
+
+# plot = ggplot(fixed_or_not, aes(x = year, color = variable, na.rm = TRUE)) + 
+#   geom_point(aes(y = value))
+# 
+# print(plot)
+
+```
+
+
+
+
+
+# **I. Required/Relevant**
+
+<<< Figure which shows dln(B/y* NOM vs REAL) for the sample 11 countries in the sample   ? >>>
+
+
+```{r}
+
+Dvariable_list = c("health", "social", "MUsocial", "familychildren", "housing", 
+                   "oldage", "sicknessdisability", "survivors", 
+                   "unemployment")
+
+for (i in 1:length(Dvariable_list)) {
+  
+plot = ggplot(data_l, aes(x = year, color = variable)) + 
+  geom_line(
+    data = . %>% filter(variable == paste0(Dvariable_list[i], "_nomPO")),
+    aes(y = value)
+  ) +
+  geom_line(
+    data = . %>% filter(variable == paste0(Dvariable_list[i], "_PO")),
+    aes(y = value)
+  ) +
+  facet_wrap(~ccode, ncol = 4, scales = "free") +
+  scale_color_manual(as.character(Dvariable_list[i]),
+                     values = wiiw_palette,
+                     labels = c("nomPO", "PO")) +
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 4)) +
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 4)) +
+  # ggtitle(paste0(Dvariable_list[i], " to Real vs. Nominal PO")) +
+  theme(legend.position = c(.88, .12)) +
+  xlab("") + ylab("")
+
+print(plot)
+ggsave(plot, file = paste0("plots/", Dvariable_list[i], ".png"))
+
+}
+
+
+```
+
+```{r}
+# check = data %>% filter(ccode == "AUT") %>% select(year, familychildren_nomPO, familychildren_PO)
+```
+
+
+
+```{r}
+
+for (i in 1:length(Dvariable_list)) {
+  
+plot = ggplot(data_l95, aes(x = year, color = variable)) + 
+  geom_line(
+    data = . %>% filter(variable == paste0("diff_log_", Dvariable_list[i], "_nomPO")),
+    aes(y = value)
+  ) +
+  geom_line(
+    data = . %>% filter(variable == paste0("diff_log_", Dvariable_list[i], "_PO")),
+    aes(y = value)
+  ) +
+  facet_wrap(~ccode, ncol = 4, scales = "free") +
+  scale_color_manual(as.character(paste0("YOY diff ", Dvariable_list[i])),
+                     values = wiiw_palette,
+                     labels = c("nomPO", "PO")) +
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 4)) +
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 4)) +
+  geom_hline(yintercept=0.00000, linetype="dashed", color = "#420C09", size=0.33) +
+  geom_vline(xintercept=1996, linetype="dashed", color = "darkgrey", size=0.22) +
+  # ggtitle(paste0("diff_log_", Dvariable_list[i], " to Real vs. Nominal PO")) +
+  theme(legend.position = c(.88, .12)) +
+  xlab("") + ylab("")
+
+print(plot)
+ggsave(plot, file = paste0("plots/diff_log_", Dvariable_list[i], ".png"))
+
+}
+
+```
+
+
+OG vs labor market inclusion
+
+```{r}
+
+  
+plot = ggplot(data_l95, aes(x = year, color = variable)) + 
+  geom_line(
+    data = . %>% filter(variable == "outputgap"),
+    aes(y = value),
+    linetype = "dashed"
+  ) +
+  geom_line(
+    data = . %>% filter(variable == "actpop_pop1564"),
+    aes(y = value)
+  ) +
+  facet_wrap(~ccode, ncol = 4, scales = "free") +
+  scale_color_manual("Measure",
+                     values = wiiw_palette,
+                     labels = c("Labor market inclusion", "Potential output")) + # in this order!!
+  scale_x_continuous(breaks=seq(1996, 2020, 10)) +
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 4), limits = c(0.6, 1.1)) +
+  # ggtitle(paste0("Rate of labor market inclusion (employed and self-employed as a ratio of working-age population)")) +
+  theme(legend.position = c(.88, .1)) +
+  xlab("") + ylab("")
+
+print(plot)
+ggsave(plot, file = paste0("plots/levels_labor_market_inclusion.png"))
+
+
+```
+
+```{r}
+
+  
+plot = ggplot(data_l95, aes(x = year, color = variable)) + 
+  geom_line(
+    data = . %>% filter(variable == "diff_log_outputgap"),
+    aes(y = value),
+    linetype = "dashed"
+  ) +
+  geom_line(
+    data = . %>% filter(variable == "diff_log_actpop_pop1564"),
+    aes(y = value)
+  ) +
+  facet_wrap(~ccode, ncol = 4, scales = "free") +
+  scale_color_manual("Measure",
+                     values = wiiw_palette,
+                     labels = c("Labor market inclusion", "Potential output")) +
+  scale_x_continuous(breaks=seq(1996, 2020, 10)) +
+  # ggtitle(paste0("Rate of labor market inclusion (employed and self-employed as a ratio of working-age population)")) +
+  theme(legend.position = c(.88, .1)) +
+  xlab("") + ylab("")
+
+print(plot)
+ggsave(plot, file = paste0("plots/diffs_labor_market_inclusion.png"))
+
+data_check = data %>% filter(ccode == "AUT", year == 2006) %>% select(outputgap, pop1564)
+```
+
+for pres
+```{r}
+
+# Dvariable_list = c("health", "social", "MUsocial", "familychildren", "housing", 
+#                    "oldage", "sicknessdisability", "survivors", 
+#                    "unemployment")
+# 
+# for (i in 1:length(Dvariable_list)) {
+#   
+# plot = ggplot(data_l, aes(x = year, color = variable)) + 
+#   geom_line(
+#     data = . %>% filter(variable == paste0(Dvariable_list[i], "_nomPO")),
+#     aes(y = value)
+#   ) +
+#   geom_line(
+#     data = . %>% filter(variable == paste0(Dvariable_list[i], "_PO")),
+#     aes(y = value)
+#   ) +
+#   facet_wrap(~ccode, ncol = 5, scales = "free") +
+#   scale_color_manual(as.character(Dvariable_list[i]),
+#                      values = wiiw_palette,
+#                      labels = c("nomPO", "PO")) +
+#   scale_x_continuous(breaks = scales::pretty_breaks(n = 4)) +
+#   scale_y_continuous(breaks = scales::pretty_breaks(n = 4)) +
+#   # ggtitle(paste0(Dvariable_list[i], " to Real vs. Nominal PO")) +
+#   theme(legend.position = c(.88, .12)) +
+#   xlab("") + ylab("")
+# 
+# print(plot)
+# ggsave(plot, file = paste0("plots/pres_", Dvariable_list[i], ".png"))
+# 
+# }
+
+```
+
