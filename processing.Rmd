@@ -1,0 +1,1722 @@
+---
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include = FALSE}
+'%!in%' <- function(x,y)!('%in%'(x,y))
+
+# rm(list = ls()) #clear list
+
+# list of dependent variables for easier filtrations
+Dvariable_list = c("familychildren", "health", "social", "housing", 
+                   "oldage", "sicknessdisability", "survivors", "unemployment")
+
+# #load packages
+# #library(xlsx) #Excel-Paket laden
+# library(calibrate) #Laden des Pakets, das f??r Datenbeschriftung n??tig ist
+# library (stargazer) #Laden des Pakets, mit dem R-Regressionsoutput in Latex-Tabellen ??bergef??hrt werden kann
+# library(sandwich)
+# library(lmtest)
+# library(getopt)
+# library(CausalGAM)
+# library(ggplot2)
+# library(reshape2)
+# library(xts)
+# library(lattice)
+# library(gridExtra)
+# library(gtable)
+# library(plm)
+# library(lfe)
+# library(lmtest)
+# library(car)
+# library(tis)
+# library(foreign)
+# library(MASS)
+# library(quantreg)
+# library(ggrepel)
+# library(dplyr)
+# library(stringr)
+# library(ggplot2)
+# library(datasets)
+# library(rio)
+# library(psych)
+# library(systemfit)
+# library(foreign)
+# library(MatchIt)
+# library(CRTgeeDR)
+# library(eurostat)
+# library(plyr)
+# library(zoo)
+# library(ggthemes)
+# library("robumeta")
+# library("metafor")
+# library("dplyr")
+# library(clubSandwich)
+# library(Hmisc)
+# library(metafor)
+# library(pracma)
+# library(broom)
+# library(sjPlot)
+# library(here)
+# library(data.table)
+# library(countrycode)
+# library(rms)
+# library(tidyr)
+# library(hrbrthemes)
+# library(plm)
+# library(ivreg)
+# # install.packages("tidytable")
+# # library
+
+#load packages
+library(yaml)
+library(data.table)   # fread, melt
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(reshape2)     # melt (used repeatedly)
+library(countrycode)
+library(here)
+# library(tidytable)
+library(readxl)
+library(writexl)
+library(countrycode)
+
+install.packages("RcppArmadillo", type = "binary", repos = "https://cran.r-project.org")
+
+
+NAWRUs = read_excel("data/NAWRU_AMECO.xlsx", range = "C1:AJ28")
+NAWRUs = NAWRUs %>% dplyr::mutate(ccode = countrycode(Country, origin = "country.name", destination = 'iso3c')) %>% select(-c(Country, Unit, Year))
+
+unemployment_rates = read_excel("data/unemployment_rate_AMECO.xlsx", range = "C1:AJ28")
+unemployment_rates = unemployment_rates %>% dplyr::mutate(ccode = countrycode(Country, origin = "country.name", destination = 'iso3c')) %>% select(-c(Country, Unit, Year))
+```
+
+```{r}
+#Family and children spending
+data <- fread(here("data/data_social_health.csv"), header=TRUE)
+
+data = data %>% dplyr::mutate(MUsocial = social - unemployment)
+
+#use only German data:
+#Germany <- subset(data, ccode %in% c('DEU'))
+
+```
+
+```{r}
+########## Instruments: ##############
+#### US output gap: #####
+
+#import:
+OGUSA <- fread(here("data/OG_USA.csv"), header=TRUE, dec=".")
+OGUSA$year <- as.character(OGUSA$year)
+data$year <- as.character(data$year)
+data <- left_join(data, OGUSA, by=c("year" = "year"))
+data$OGUSA<-as.numeric(data$OGUSA)
+data$OGUSA <- (100 - data$OGUSA)/100
+
+#create log and diff versions:
+data$log_OGUSA <- log(data$OGUSA)
+
+# data <- data %>% 
+#   dplyr::group_by(ccode) %>% 
+#   dplyr::mutate(diff_log_OGUSA = if_else(lag(year) == year-1, log_OGUSA - lag(log_OGUSA), NA)) %>% 
+#   ungroup()()
+
+data = data %>% 
+  tidytable::arrange(ccode) %>% 
+  dplyr::mutate(diff_log_OGUSA = log_OGUSA - lag(log_OGUSA))
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(diff_OGUSA = OGUSA - dplyr::lag(OGUSA)) %>% 
+  ungroup()
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_OGUSA = dplyr::lag(OGUSA)) %>% 
+  ungroup()
+
+
+data$log_lag_OGUSA <- log(data$lag_OGUSA)
+
+```
+
+```{r}
+### oil price ###
+
+#import:
+oilprice <- fread(here("data/oilprice.csv"), header=TRUE, dec=".")
+oilprice$year <- as.character(oilprice$year)
+data$year <- as.character(data$year)
+data <- left_join(data, oilprice, by=c("year" = "year"))
+data$oilprice<-as.numeric(data$oilprice)
+
+#create log and diff versions:
+data$log_oilprice <- log(data$oilprice)
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(diff_log_oilprice = log_oilprice - lag(log_oilprice)) %>% 
+  ungroup()
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(diff_oilprice = oilprice - lag(oilprice)) %>% 
+  ungroup()
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_oilprice = lag(oilprice)) %>% 
+  ungroup()
+data$log_lag_oilprice <- log(data$lag_oilprice)
+
+#divide by real potential output:
+data$oilprice_PO <- data$oilprice/data$potentialoutput
+
+data$log_oilprice_PO <- log(data$oilprice_PO)
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(diff_log_oilprice_PO = log_oilprice_PO - lag(log_oilprice_PO)) %>% 
+  ungroup()
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(diff_oilprice_PO = oilprice_PO - lag(oilprice_PO)) %>% 
+  ungroup()
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_oilprice_PO = lag(oilprice_PO)) %>% 
+  ungroup()
+data$log_lag_oilprice_PO <- log(data$lag_oilprice_PO)
+
+```
+
+```{r}
+#GDP deflator:
+deflator <- fread(here("data/deflator.csv"), header=TRUE, dec=".")
+deflator <- melt(deflator, id.var="Country")
+deflator$ccode <- countrycode(deflator$Country, 'country.name', 'iso3c') #convert name codes to three letter country codes (iso3n)
+colnames(deflator) <- c('Country', 'year', 'deflator', 'ccode')
+deflator <- select(deflator, year, deflator, ccode)
+deflator$year <- as.character(deflator$year)
+data$year <- as.character(data$year)
+data <- left_join(data, deflator, by=c("ccode" = "ccode", "year" = "year"))
+data$deflator<-as.numeric(data$deflator)
+
+#nominal exports:
+
+exports <- fread(here("data/exports.csv"), header=TRUE, dec=".")
+exports <- melt(exports, id.var="Country")
+exports$ccode <- countrycode(exports$Country, 'country.name', 'iso3c') #convert name codes to three letter country codes (iso3n)
+colnames(exports) <- c('Country', 'year', 'exports', 'ccode')
+exports <- select(exports, year, exports, ccode)
+exports$year <- as.character(exports$year)
+data$year <- as.character(data$year)
+data <- left_join(data, exports, by=c("ccode" = "ccode", "year" = "year"))
+data$exports<-as.numeric(data$exports)
+
+#population 0 to 14 years:
+pop_0_14 <- fread(here("data/pop_0_14.csv"), header=TRUE, dec=".")
+pop_0_14 <- melt(pop_0_14, id.var="Country")
+pop_0_14$ccode <- countrycode(pop_0_14$Country, 'country.name', 'iso3c') #convert name codes to three letter country codes (iso3n)
+colnames(pop_0_14) <- c('Country', 'year', 'pop_0_14', 'ccode')
+pop_0_14 <- select(pop_0_14, year, pop_0_14, ccode)
+pop_0_14$year <- as.character(pop_0_14$year)
+data$year <- as.character(data$year)
+data <- left_join(data, pop_0_14, by=c("ccode" = "ccode", "year" = "year"))
+data$pop_0_14<-as.numeric(data$pop_0_14)
+
+#population 15-64 years:
+pop1564 <- fread(here("data/pop_15_64.csv"), header=TRUE, dec=".")
+pop1564 <- melt(pop1564, id.var="Country")
+pop1564$ccode <- countrycode(pop1564$Country, 'country.name', 'iso3c') #convert name codes to three letter country codes (iso3n)
+colnames(pop1564) <- c('Country', 'year', 'pop1564', 'ccode')
+pop1564 <- select(pop1564, year, pop1564, ccode)
+pop1564$year <- as.character(pop1564$year)
+data$year <- as.character(data$year)
+data <- left_join(data, pop1564, by=c("ccode" = "ccode", "year" = "year"))
+data$pop1564<-as.numeric(data$pop1564)
+
+#population 65+ years:
+pop_65 <- fread(here("data/pop_65.csv"), header=TRUE, dec=".")
+pop_65 <- melt(pop_65, id.var="Country")
+pop_65$ccode <- countrycode(pop_65$Country, 'country.name', 'iso3c') #convert name codes to three letter country codes (iso3n)
+colnames(pop_65) <- c('Country', 'year', 'pop_65', 'ccode')
+pop_65 <- select(pop_65, year, pop_65, ccode)
+pop_65$year <- as.character(pop_65$year)
+data$year <- as.character(data$year)
+data <- left_join(data, pop_65, by=c("ccode" = "ccode", "year" = "year"))
+data$pop_65<-as.numeric(data$pop_65)
+
+#population total:
+pop_tot <- fread(here("data/pop_tot.csv"), header=TRUE, dec=".")
+pop_tot <- melt(pop_tot, id.var="Country")
+pop_tot$ccode <- countrycode(pop_tot$Country, 'country.name', 'iso3c') #convert name codes to three letter country codes (iso3n)
+colnames(pop_tot) <- c('Country', 'year', 'pop_tot', 'ccode')
+pop_tot <- select(pop_tot, year, pop_tot, ccode)
+pop_tot$year <- as.character(pop_tot$year)
+data$year <- as.character(data$year)
+data <- left_join(data, pop_tot, by=c("ccode" = "ccode", "year" = "year"))
+data$pop_tot<-as.numeric(data$pop_tot)
+
+#nr of employed:
+employed <- fread(here("data/employment.csv"), header=TRUE, dec=".")
+employed <- melt(employed, id.var="Country")
+employed$ccode <- countrycode(employed$Country, 'country.name', 'iso3c') #convert name codes to three letter country codes (iso3n)
+colnames(employed) <- c('Country', 'year', 'employed', 'ccode')
+employed <- select(employed, year, employed, ccode)
+employed$year <- as.character(employed$year)
+data$year <- as.character(data$year)
+data <- left_join(data, employed, by=c("ccode" = "ccode", "year" = "year"))
+data$employed<-as.numeric(data$employed)
+
+#nr of self-employed:
+selfemployed <- fread(here("data/self_employed.csv"), header=TRUE, dec=".")
+selfemployed <- melt(selfemployed, id.var="Country")
+selfemployed$ccode <- countrycode(selfemployed$Country, 'country.name', 'iso3c') #convert name codes to three letter country codes (iso3n)
+colnames(selfemployed) <- c('Country', 'year', 'selfemployed', 'ccode')
+selfemployed <- select(selfemployed, year, selfemployed, ccode)
+selfemployed$year <- as.character(selfemployed$year)
+data$year <- as.character(data$year)
+data <- left_join(data, selfemployed, by=c("ccode" = "ccode", "year" = "year"))
+data$selfemployed<-as.numeric(data$selfemployed)
+
+#activated population:
+data$actpop <- data$employed + data$selfemployed
+
+#nominal potential output:
+data$NOMpotentialoutput <- data$potentialoutput * data$deflator/100
+
+#real GDP:
+data$realGDP <- data$nominalGDP/(data$deflator/100)
+
+```
+
+
+# HOUSING: replacing zeroes with a small value
+
+```{r}
+data$housing = ifelse(data$housing < 0.1, 0.1, data$housing)
+```
+
+# We decided to try using nominal potential output instead of real (in N goods);
+# see chunks 3000+ for new regressions
+```{r}
+#in relation to real potential output (as in OECD/KOM method we divide NOMINAL expenditures by REAL potential output)
+data$familychildren_PO <- data$familychildren/1000/data$potentialoutput
+data$health_PO <- data$health/1000/data$potentialoutput
+data$housing_PO <- data$housing/1000/data$potentialoutput
+data$oldage_PO <- data$oldage/1000/data$potentialoutput
+data$sicknessdisability_PO <- data$sicknessdisability/1000/data$potentialoutput
+data$social_PO <- data$social/1000/data$potentialoutput
+data$survivors_PO <- data$survivors/1000/data$potentialoutput
+data$unemployment_PO <- data$unemployment/1000/data$potentialoutput
+data$exports_PO <- data$exports/data$potentialoutput
+
+data$MUsocial_PO = data$MUsocial/1000/data$potentialoutput
+
+#in relation to nominal potential output
+data$familychildren_nomPO <- data$familychildren/1000/data$NOMpotentialoutput
+data$health_nomPO <- data$health/1000/data$NOMpotentialoutput
+data$housing_nomPO <- data$housing/1000/data$NOMpotentialoutput
+data$oldage_nomPO <- data$oldage/1000/data$NOMpotentialoutput
+data$sicknessdisability_nomPO <- data$sicknessdisability/1000/data$NOMpotentialoutput
+data$social_nomPO <- data$social/1000/data$NOMpotentialoutput
+data$survivors_nomPO <- data$survivors/1000/data$NOMpotentialoutput
+data$unemployment_nomPO <- data$unemployment/1000/data$NOMpotentialoutput
+data$exports_nomPO <- data$exports/data$NOMpotentialoutput
+
+data$MUsocial_nomPO = data$MUsocial/1000/data$NOMpotentialoutput
+```
+
+NOMINAL POTENTIAL OUTPUT: 
+from 20.02 on, decided to switch from real to nominal, better results
+(discussed in the paper why)
+
+```{r, include=FALSE}
+# dplyr::mutate(lag_outputgap = lag(nominalGDP) / lag(potentialoutput)) %>% 
+# is wrong
+# changed to lag(outputgap)
+data$outputgap <- data$realGDP / data$potentialoutput
+data$log_outputgap <- log(data$outputgap)
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(diff_log_outputgap = log_outputgap - lag(log_outputgap)) %>% 
+  ungroup()
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(diff_outputgap = outputgap - lag(outputgap)) %>% 
+  ungroup()
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_outputgap = lag(outputgap)) %>% 
+  ungroup()
+data$log_lag_outputgap <- log(data$lag_outputgap)
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_diff_log_outputgap = lag(diff_log_outputgap)) %>% 
+  ungroup()
+
+#exports
+data$exports_nomPO <- data$exports/data$NOMpotentialoutput
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_exports_nomPO = lag(exports_nomPO))%>% 
+  ungroup()
+data$log_lag_exports_nomPO <- log(data$lag_exports_nomPO)
+data$log_exports_nomPO <- log(data$exports_nomPO)
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(diff_log_exports_nomPO = log_exports_nomPO - lag(log_exports_nomPO)) %>% 
+  ungroup()
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_diff_log_exports_nomPO = lag(diff_log_exports_nomPO))%>%
+  ungroup()
+
+
+# family and children 
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_familychildren_nomPO = lag(familychildren_nomPO)) %>% 
+  ungroup()
+
+data$log_lag_familychildren_nomPO <- log(data$lag_familychildren_nomPO)
+data$log_familychildren_nomPO <- log(data$familychildren_nomPO)
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(diff_log_familychildren_nomPO = log_familychildren_nomPO - lag(log_familychildren_nomPO)) %>% 
+  ungroup()
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_diff_log_familychildren_nomPO = lag(diff_log_familychildren_nomPO))%>%
+  ungroup()
+
+```
+
+```{r}
+# health
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_health_nomPO = lag(health_nomPO))%>% 
+  ungroup()
+data$log_lag_health_nomPO <- log(data$lag_health_nomPO)
+data$log_health_nomPO <- log(data$health_nomPO)
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(diff_log_health_nomPO = log_health_nomPO - lag(log_health_nomPO)) %>% 
+  ungroup()
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_diff_log_health_nomPO = lag(diff_log_health_nomPO))%>%
+  ungroup()
+
+```
+
+```{r}
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_social_nomPO = lag(social_nomPO))%>% 
+  ungroup()
+data$log_lag_social_nomPO <- log(data$lag_social_nomPO)
+data$log_social_nomPO <- log(data$social_nomPO)
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(diff_log_social_nomPO = log_social_nomPO - lag(log_social_nomPO)) %>% 
+  ungroup()
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_diff_log_social_nomPO = lag(diff_log_social_nomPO))%>%
+  ungroup()
+```
+
+```{r}
+# social -- this approach was changed
+# data <- data %>% 
+#   dplyr::group_by(ccode) %>% 
+#   dplyr::mutate(lag_social_nomPO = lag(social_nomPO))%>% 
+#   ungroup()
+# data$log_lag_social_nomPO <- log(data$lag_social_nomPO)
+# data$log_social_nomPO <- log(data$social_nomPO)
+
+## 1 = bad
+# data <- data %>%
+#   tidytable::arrange.(ccode) %>%
+#   dplyr::mutate(diff_log_social_nomPO = log_social_nomPO - lag(log_social_nomPO)) %>%
+#   ungroup()
+
+## 2 = working?
+# data <- data %>%
+#   group_by(ccode) %>%
+#   dplyr::mutate(diff_log_social_nomPO = log_social_nomPO - lag(log_social_nomPO))
+
+## 3 = working? 
+# data <- data %>%
+#   group_by(ccode) %>%
+#   dplyr::mutate(diff_log_social_nomPO = log_social_nomPO - lag(log_social_nomPO)) %>% 
+#   ungroup()
+
+ccheck = data %>% filter(ccode == "GRC") 
+
+ccheck$log_social_nomPO
+lag(ccheck$log_social_nomPO)
+
+ccheck$log_social_nomPO - lag(ccheck$log_social_nomPO)
+ccheck$diff_log_social_nomPO
+```
+
+```{r}
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_diff_log_social_nomPO = lag(diff_log_social_nomPO))%>%
+  ungroup()
+
+# social minus unemployment
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_MUsocial_nomPO = lag(MUsocial_nomPO))%>% 
+  ungroup()
+data$log_lag_MUsocial_nomPO <- log(data$lag_MUsocial_nomPO)
+data$log_MUsocial_nomPO <- log(data$MUsocial_nomPO)
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(diff_log_MUsocial_nomPO = log_MUsocial_nomPO - lag(log_MUsocial_nomPO)) %>% 
+  ungroup()
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_diff_log_MUsocial_nomPO = lag(diff_log_MUsocial_nomPO))%>%
+  ungroup()
+
+```
+
+HOUSING Issue
+# (SOLUTION: take the minimal non-zero value, i.e. CYP 2019 = 0.1 housing
+# old way commented out
+```{r}
+# housing
+
+data <- data %>%
+  dplyr::group_by(ccode) %>%
+  dplyr::mutate(lag_housing_nomPO = lag(housing_nomPO))%>%
+  ungroup()
+data$log_lag_housing_nomPO <- log(data$lag_housing_nomPO)
+data$log_housing_nomPO <- log(data$housing_nomPO)
+
+#some values of housing for LUX are 0, so the logarithm becomes infinite;
+#therefore preliminary solution to set those values equal to 0:
+# len = length(data$log_housing_nomPO)
+# for (x in 1:len){
+#   if (is.na(data$log_housing_nomPO[x])){}
+#       else{
+#     if (abs(data$log_housing_nomPO[x])==Inf){
+#       data$log_housing_nomPO[x] = 0
+#     }
+#   }
+# }
+# #dot the same for the lagged variable:
+# for (x in 1:len){
+#   if (is.na(data$log_lag_housing_nomPO[x])){}
+#   else{
+#     if (abs(data$log_lag_housing_nomPO[x])==Inf){
+#       data$log_lag_housing_nomPO[x] = 0
+#     }
+#   }
+# }
+
+
+data <- data %>%
+  dplyr::group_by(ccode) %>%
+  dplyr::mutate(diff_log_housing_nomPO = log_housing_nomPO - lag(log_housing_nomPO)) %>%
+  ungroup()
+
+data <- data %>%
+  dplyr::group_by(ccode) %>%
+  dplyr::mutate(lag_diff_log_housing_nomPO = lag(diff_log_housing_nomPO))%>%
+  ungroup()
+
+```
+
+```{r}
+# oldage 
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_oldage_nomPO = lag(oldage_nomPO))%>% 
+  ungroup()
+data$log_lag_oldage_nomPO <- log(data$lag_oldage_nomPO)
+data$log_oldage_nomPO <- log(data$oldage_nomPO)
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(diff_log_oldage_nomPO = log_oldage_nomPO - lag(log_oldage_nomPO)) %>% 
+  ungroup()
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_diff_log_oldage_nomPO = lag(diff_log_oldage_nomPO))%>%
+  ungroup()
+
+```
+
+```{r}
+# sicknessdisability 
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_sicknessdisability_nomPO = lag(sicknessdisability_nomPO))%>% 
+  ungroup()
+data$log_lag_sicknessdisability_nomPO <- log(data$lag_sicknessdisability_nomPO)
+data$log_sicknessdisability_nomPO <- log(data$sicknessdisability_nomPO)
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(diff_log_sicknessdisability_nomPO = log_sicknessdisability_nomPO - lag(log_sicknessdisability_nomPO)) %>% 
+  ungroup()
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_diff_log_sicknessdisability_nomPO = lag(diff_log_sicknessdisability_nomPO))%>%
+  ungroup()
+
+```
+
+```{r}
+# survivors 
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_survivors_nomPO = lag(survivors_nomPO))%>% 
+  ungroup()
+data$log_lag_survivors_nomPO <- log(data$lag_survivors_nomPO)
+data$log_survivors_nomPO <- log(data$survivors_nomPO)
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(diff_log_survivors_nomPO = log_survivors_nomPO - lag(log_survivors_nomPO)) %>% 
+  ungroup()
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_diff_log_survivors_nomPO = lag(diff_log_survivors_nomPO))%>%
+  ungroup()
+
+```
+
+```{r}
+# unemployment 
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_unemployment_nomPO = lag(unemployment_nomPO))%>% 
+  ungroup()
+data$log_lag_unemployment_nomPO <- log(data$lag_unemployment_nomPO)
+data$log_unemployment_nomPO <- log(data$unemployment_nomPO)
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(diff_log_unemployment_nomPO = log_unemployment_nomPO - lag(log_unemployment_nomPO)) %>% 
+  ungroup()
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_diff_log_unemployment_nomPO = lag(diff_log_unemployment_nomPO))%>%
+  ungroup()
+
+```
+
+### End of conversion to nominals
+
+
+
+
+```{r}
+#in relation to nominal GDP
+data$familychildren_GDP <- data$familychildren/1000/data$nominalGDP
+data$health_GDP <- data$health/1000/data$nominalGDP
+data$housing_GDP <- data$housing/1000/data$nominalGDP
+data$oldage_GDP <- data$oldage/1000/data$nominalGDP
+data$sicknessdisability_GDP <- data$sicknessdisability/1000/data$nominalGDP
+data$social_GDP <- data$social/1000/data$nominalGDP
+data$survivors_GDP <- data$survivors/1000/data$nominalGDP
+data$unemployment_GDP <- data$unemployment/1000/data$nominalGDP
+
+#in relation to population 15-64:
+data$actpop_pop1564 <- data$actpop / data$pop1564
+data$familychildren_pop1564 <- data$familychildren/1000/data$pop1564
+data$health_pop1564 <- data$health/1000/data$pop1564
+data$housing_pop1564 <- data$housing/1000/data$pop1564
+data$oldage_pop1564 <- data$oldage/1000/data$pop1564
+data$sicknessdisability_pop1564 <- data$sicknessdisability/1000/data$pop1564
+data$social_pop1564 <- data$social/1000/data$pop1564
+data$survivors_pop1564 <- data$survivors/1000/data$pop1564
+data$unemployment_pop1564 <- data$unemployment/1000/data$pop1564
+
+data$exports_pop1564 = data$exports/1000/data$pop1564
+
+data$MUsocial_pop1564 = data$MUsocial/1000/data$pop1564
+
+
+#output gap
+data$outputgap <- data$realGDP / data$potentialoutput
+data$log_outputgap <- log(data$outputgap)
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(diff_log_outputgap = log_outputgap - lag(log_outputgap)) %>% 
+  ungroup()
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(diff_outputgap = outputgap - lag(outputgap)) %>% 
+  ungroup()
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_outputgap = lag(outputgap)) %>% 
+  ungroup()
+data$log_lag_outputgap <- log(data$lag_outputgap)
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_diff_log_outputgap = lag(diff_log_outputgap)) %>% 
+  ungroup()
+
+
+#exports
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_exports_PO = lag(exports_PO))%>% 
+  ungroup()
+data$log_lag_exports_PO <- log(data$lag_exports_PO)
+data$log_exports_PO <- log(data$exports_PO)
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(diff_log_exports_PO = log_exports_PO - lag(log_exports_PO)) %>% 
+  ungroup()
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_diff_log_exports_PO = lag(diff_log_exports_PO))%>%
+  ungroup()
+
+#family and children
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_familychildren_PO = lag(familychildren_PO))%>% 
+  ungroup()
+data$log_lag_familychildren_PO <- log(data$lag_familychildren_PO)
+data$log_familychildren_PO <- log(data$familychildren_PO)
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(diff_log_familychildren_PO = log_familychildren_PO - lag(log_familychildren_PO)) %>% 
+  ungroup()
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_diff_log_familychildren_PO = lag(diff_log_familychildren_PO))%>%
+  ungroup()
+
+#health
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_health_PO = lag(health_PO))%>%
+  ungroup()
+data$log_lag_health_PO <- log(data$lag_health_PO)
+data$log_health_PO <- log(data$health_PO)
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(diff_log_health_PO = log_health_PO - lag(log_health_PO)) %>% 
+  ungroup()
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_diff_log_health_PO = lag(diff_log_health_PO))%>%
+  ungroup()
+
+#social
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_social_PO = lag(social_PO))%>%
+  ungroup()
+data$log_lag_social_PO <- log(data$lag_social_PO)
+data$log_social_PO <- log(data$social_PO)
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(diff_log_social_PO = log_social_PO - lag(log_social_PO)) %>% 
+  ungroup()
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_diff_log_social_PO = lag(diff_log_social_PO))%>%
+  ungroup()
+
+ccheck = data %>% filter(ccode == "GRC") 
+
+ccheck$log_social_PO
+lag(ccheck$log_social_PO)
+
+ccheck$log_social_PO - lag(ccheck$log_social_PO)
+ccheck$diff_log_social_PO
+
+
+# social minus unemployment 
+# = social spending - unemp spending
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_MUsocial_PO = lag(MUsocial_PO))%>% 
+  ungroup()
+data$log_lag_MUsocial_PO <- log(data$lag_MUsocial_PO)
+data$log_MUsocial_PO <- log(data$MUsocial_PO)
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(diff_log_MUsocial_PO = log_MUsocial_PO - lag(log_MUsocial_PO)) %>% 
+  ungroup()
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_diff_log_MUsocial_PO = lag(diff_log_MUsocial_PO))%>%
+  ungroup()
+```
+         
+```{r}
+#housing
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_housing_PO = lag(housing_PO))%>%
+  ungroup()
+data$log_lag_housing_PO <- log(data$lag_housing_PO)
+data$log_housing_PO <- log(data$housing_PO)
+#some values of housing for LUX are 0, so the logarithm becomes infinite;
+#therefore preliminary solution to set those values equal to 0:
+# len = length(data$log_housing_PO)
+# for (x in 1:len){
+#   if (is.na(data$log_housing_PO[x])){}
+#       else{
+#     if (abs(data$log_housing_PO[x])==Inf){
+#       data$log_housing_PO[x] = 0
+#     }
+#   }
+# }
+# #dot the same for the lagged variable:
+# for (x in 1:len){
+#   if (is.na(data$log_lag_housing_PO[x])){}
+#   else{
+#     if (abs(data$log_lag_housing_PO[x])==Inf){
+#       data$log_lag_housing_PO[x] = 0
+#     }
+#   }
+# }
+
+ggplot(data) + geom_point(aes(x = outputgap, y = housing_nomPO))
+```
+
+```{r}
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(diff_log_housing_PO = log_housing_PO - lag(log_housing_PO)) %>% 
+  ungroup()
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_diff_log_housing_PO = lag(diff_log_housing_PO))%>%
+  ungroup()
+
+#oldage
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_oldage_PO = lag(oldage_PO))%>%
+  ungroup()
+data$log_lag_oldage_PO <- log(data$lag_oldage_PO)
+data$log_oldage_PO <- log(data$oldage_PO)
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(diff_log_oldage_PO = log_oldage_PO - lag(log_oldage_PO)) %>% 
+  ungroup()
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_diff_log_oldage_PO = lag(diff_log_oldage_PO))%>%
+  ungroup()
+
+#sicknessdisability
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_sicknessdisability_PO = lag(sicknessdisability_PO))%>%
+  ungroup()
+data$log_lag_sicknessdisability_PO <- log(data$lag_sicknessdisability_PO)
+data$log_sicknessdisability_PO <- log(data$sicknessdisability_PO)
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(diff_log_sicknessdisability_PO = log_sicknessdisability_PO - lag(log_sicknessdisability_PO)) %>% 
+  ungroup()
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_diff_log_sicknessdisability_PO = lag(diff_log_sicknessdisability_PO))%>%
+  ungroup()
+
+#survivors
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_survivors_PO = lag(survivors_PO))%>%
+  ungroup()
+data$log_lag_survivors_PO <- log(data$lag_survivors_PO)
+data$log_survivors_PO <- log(data$survivors_PO)
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(diff_log_survivors_PO = log_survivors_PO - lag(log_survivors_PO)) %>% 
+  ungroup()
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_diff_log_survivors_PO = lag(diff_log_survivors_PO))%>%
+  ungroup()
+
+#unemployment
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_unemployment_PO = lag(unemployment_PO))%>%
+  ungroup()
+data$log_lag_unemployment_PO <- log(data$lag_unemployment_PO)
+data$log_unemployment_PO <- log(data$unemployment_PO)
+
+data <- data %>%
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(diff_log_unemployment_PO = log_unemployment_PO - lag(log_unemployment_PO)) %>% 
+  ungroup()
+
+data <- data %>%
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_diff_log_unemployment_PO = lag(diff_log_unemployment_PO))%>%
+  ungroup()
+
+########## divide through population 15-64:##########
+
+#family and children
+data <- data %>%
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_familychildren_pop1564 = lag(familychildren_pop1564))%>%
+  ungroup()
+data$log_lag_familychildren_pop1564 <- log(data$lag_familychildren_pop1564)
+data$log_familychildren_pop1564 <- log(data$familychildren_pop1564)
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(diff_log_familychildren_pop1564 = log_familychildren_pop1564 - lag(log_familychildren_pop1564)) %>% 
+  ungroup()
+
+data <- data %>%
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_diff_log_familychildren_pop1564 = lag(diff_log_familychildren_pop1564))%>%
+  ungroup()
+
+#health
+data <- data %>%
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_health_pop1564 = lag(health_pop1564))%>%
+  ungroup()
+data$log_lag_health_pop1564 <- log(data$lag_health_pop1564)
+data$log_health_pop1564 <- log(data$health_pop1564)
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(diff_log_health_pop1564 = log_health_pop1564 - lag(log_health_pop1564)) %>% 
+  ungroup()
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_diff_log_health_pop1564 = lag(diff_log_health_pop1564))%>%
+  ungroup()
+
+#social
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_social_pop1564 = lag(social_pop1564))%>%
+  ungroup()
+data$log_lag_social_pop1564 <- log(data$lag_social_pop1564)
+data$log_social_pop1564 <- log(data$social_pop1564)
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(diff_log_social_pop1564 = log_social_pop1564 - lag(log_social_pop1564)) %>% 
+  ungroup()
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_diff_log_social_pop1564 = lag(diff_log_social_pop1564))%>%
+  ungroup()
+
+#social minus unemployment
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_MUsocial_pop1564 = lag(MUsocial_pop1564))%>%
+  ungroup()
+data$log_lag_MUsocial_pop1564 <- log(data$lag_MUsocial_pop1564)
+data$log_MUsocial_pop1564 <- log(data$MUsocial_pop1564)
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(diff_log_MUsocial_pop1564 = log_MUsocial_pop1564 - lag(log_MUsocial_pop1564)) %>% 
+  ungroup()
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_diff_log_MUsocial_pop1564 = lag(diff_log_MUsocial_pop1564))%>%
+  ungroup()
+
+#housing
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_housing_pop1564 = lag(housing_pop1564))%>%
+  ungroup()
+data$log_lag_housing_pop1564 <- log(data$lag_housing_pop1564)
+data$log_housing_pop1564 <- log(data$housing_pop1564)
+#some values of housing for LUX are 0, so the logarythm becomes infinite;
+# #therefore preliminary solution to set those values equal to 0:
+# len = length(data$log_housing_pop1564)
+# for (x in 1:len){
+#   if (is.na(data$log_housing_pop1564[x])){}
+#   else{
+#     if (abs(data$log_housing_pop1564[x])==Inf){
+#       data$log_housing_pop1564[x] = 0
+#     }
+#   }
+# }
+# #the same for the lag:
+# for (x in 1:len){
+#   if (is.na(data$log_lag_housing_pop1564[x])){}
+#   else{
+#     if (abs(data$log_lag_housing_pop1564[x])==Inf){
+#       data$log_lag_housing_pop1564[x] = 0
+#     }
+#   }
+# }
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(diff_log_housing_pop1564 = log_housing_pop1564 - lag(log_housing_pop1564)) %>% 
+  ungroup()
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_diff_log_housing_pop1564 = lag(diff_log_housing_pop1564))%>%
+  ungroup()
+
+#oldage
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_oldage_pop1564 = lag(oldage_pop1564))%>%
+  ungroup()
+data$log_lag_oldage_pop1564 <- log(data$lag_oldage_pop1564)
+data$log_oldage_pop1564 <- log(data$oldage_pop1564)
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(diff_log_oldage_pop1564 = log_oldage_pop1564 - lag(log_oldage_pop1564)) %>% 
+  ungroup()
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_diff_log_oldage_pop1564 = lag(diff_log_oldage_pop1564))%>%
+  ungroup()
+
+#sicknessdisability
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_sicknessdisability_pop1564 = lag(sicknessdisability_pop1564))%>%
+  ungroup()
+data$log_lag_sicknessdisability_pop1564 <- log(data$lag_sicknessdisability_pop1564)
+data$log_sicknessdisability_pop1564 <- log(data$sicknessdisability_pop1564)
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(diff_log_sicknessdisability_pop1564 = log_sicknessdisability_pop1564 - lag(log_sicknessdisability_pop1564)) %>% 
+  ungroup()
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_diff_log_sicknessdisability_pop1564 = lag(diff_log_sicknessdisability_pop1564))%>%
+  ungroup()
+
+#survivors
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_survivors_pop1564 = lag(survivors_pop1564))%>%
+  ungroup()
+data$log_lag_survivors_pop1564 <- log(data$lag_survivors_pop1564)
+data$log_survivors_pop1564 <- log(data$survivors_pop1564)
+
+data <- data %>%
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(diff_log_survivors_pop1564 = log_survivors_pop1564 - lag(log_survivors_pop1564)) %>% 
+  ungroup()
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_diff_log_survivors_pop1564 = lag(diff_log_survivors_pop1564))%>%
+  ungroup()
+
+#unemployment
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_unemployment_pop1564 = lag(unemployment_pop1564))%>%
+  ungroup()
+data$log_lag_unemployment_pop1564 <- log(data$lag_unemployment_pop1564)
+data$log_unemployment_pop1564 <- log(data$unemployment_pop1564)
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(diff_log_unemployment_pop1564 = log_unemployment_pop1564 - lag(log_unemployment_pop1564)) %>% 
+  ungroup()
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_diff_log_unemployment_pop1564 = lag(diff_log_unemployment_pop1564))%>%
+  ungroup()
+
+#exports
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_exports_pop1564 = lag(exports_pop1564))%>% 
+  ungroup()
+data$log_lag_exports_pop1564 <- log(data$lag_exports_pop1564)
+data$log_exports_pop1564 <- log(data$exports_pop1564)
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(diff_log_exports_pop1564 = log_exports_pop1564 - lag(log_exports_pop1564)) %>% 
+  ungroup()
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_diff_log_exports_pop1564 = lag(diff_log_exports_pop1564))%>%
+  ungroup()
+
+
+
+##############
+
+#population statistics:
+#in relation to population 15-64:
+data$actpop_pop1564 <- data$actpop / data$pop1564
+data$pop_0_14_pop1564 <- data$pop_0_14/data$pop1564
+data$pop1564_pop1564 <- data$pop1564/data$pop1564
+data$pop_65_pop1564 <- data$pop_65/data$pop1564
+
+#logs, lags and differences:
+data$log_actpop_pop1564 <- log(data$actpop_pop1564)
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(diff_log_actpop_pop1564 = log_actpop_pop1564 - lag(log_actpop_pop1564)) %>% 
+  ungroup()
+
+# 03/05
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_diff_log_actpop_pop1564 =  lag(diff_log_actpop_pop1564)) %>% 
+  ungroup()
+#
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_actpop_pop1564 = lag(actpop_pop1564))%>%
+  ungroup()
+data$log_lag_actpop_pop1564 <- log(data$lag_actpop_pop1564)
+
+data$log_pop_0_14_pop1564 <- log(data$pop_0_14_pop1564)
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(diff_log_pop_0_14_pop1564 = log_pop_0_14_pop1564 - lag(log_pop_0_14_pop1564)) %>% 
+  ungroup()
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_diff_log_pop_0_14_pop1564 = lag(diff_log_pop_0_14_pop1564))%>%
+  ungroup()
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_pop_0_14_pop1564 = lag(pop_0_14_pop1564))%>%
+  ungroup()
+data$log_lag_pop_0_14_pop1564 <- log(data$lag_pop_0_14_pop1564)
+
+data$log_pop_65_pop1564 <- log(data$pop_65_pop1564)
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(diff_log_pop_65_pop1564 = log_pop_65_pop1564 - lag(log_pop_65_pop1564)) %>% 
+  ungroup()
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_diff_log_pop_65_pop1564 = lag(diff_log_pop_65_pop1564))%>%
+  ungroup()
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_pop_65_pop1564 = lag(pop_65_pop1564))%>%
+  ungroup()
+data$log_lag_pop_65_pop1564 <- log(data$lag_pop_65_pop1564)
+```
+
+```{r}
+###############
+#income data:
+
+#compensation of employees (AMECO):
+wages <- fread(here("data/wages.csv"), header=TRUE, dec=".")
+wages <- melt(wages, id.var="Country")
+wages$ccode <- countrycode(wages$Country, 'country.name', 'iso3c') #convert name codes to three letter country codes (iso3n)
+colnames(wages) <- c('Country', 'year', 'wages', 'ccode')
+wages <- select(wages, year, wages, ccode)
+wages$year <- as.character(wages$year)
+data$year <- as.character(data$year)
+data <- left_join(data, wages, by=c("ccode" = "ccode", "year" = "year"))
+data$wages<-as.numeric(data$wages)
+#colnames(data)
+```
+
+```{r}
+
+#gross operating surplus corporations (AMECO):
+GOSC <- fread(here("data/GOSC.csv"), header=TRUE, dec=".")
+GOSC <- melt(GOSC, id.var="Country")
+GOSC$ccode <- countrycode(GOSC$Country, 'country.name', 'iso3c') #convert name codes to three letter country codes (iso3n)
+colnames(GOSC) <- c('Country', 'year', 'GOSC', 'ccode')
+GOSC <- select(GOSC, year, GOSC, ccode)
+GOSC$year <- as.character(GOSC$year)
+data$year <- as.character(data$year)
+data <- left_join(data, GOSC, by=c("ccode" = "ccode", "year" = "year"))
+data$GOSC<-as.numeric(data$GOSC)
+
+```
+
+```{r}
+#gross national income (AMECO):
+GNI <- fread(here("data/GNI.csv"), header=TRUE, dec=".")
+GNI <- melt(GNI, id.var="Country")
+GNI$ccode <- countrycode(GNI$Country, 'country.name', 'iso3c') #convert name codes to three letter country codes (iso3n)
+colnames(GNI) <- c('Country', 'year', 'GNI', 'ccode')
+GNI <- select(GNI, year, GNI, ccode)
+GNI$year <- as.character(GNI$year)
+data$year <- as.character(data$year)
+data <- left_join(data, GNI, by=c("ccode" = "ccode", "year" = "year"))
+data$GNI<-as.numeric(data$GNI)
+
+#net primary income from the rest of the world (AMECO):
+NPIROW <- fread(here("data/NPIROW.csv"), header=TRUE, dec=".")
+NPIROW <- melt(NPIROW, id.var="Country")
+NPIROW$ccode <- countrycode(NPIROW$Country, 'country.name', 'iso3c') #convert name codes to three letter country codes (iso3n)
+colnames(NPIROW) <- c('Country', 'year', 'NPIROW', 'ccode')
+NPIROW <- select(NPIROW, year, NPIROW, ccode)
+NPIROW$year <- as.character(NPIROW$year)
+data$year <- as.character(data$year)
+data <- left_join(data, NPIROW, by=c("ccode" = "ccode", "year" = "year"))
+data$NPIROW<-as.numeric(data$NPIROW)
+
+#taxes linked to imports and production minus subsidies (AMECO):
+TIPMS <- fread(here("data/TIPMS.csv"), header=TRUE, dec=".")
+TIPMS <- melt(TIPMS, id.var="Country")
+TIPMS$ccode <- countrycode(TIPMS$Country, 'country.name', 'iso3c') #convert name codes to three letter country codes (iso3n)
+colnames(TIPMS) <- c('Country', 'year', 'TIPMS', 'ccode')
+TIPMS <- select(TIPMS, year, TIPMS, ccode)
+TIPMS$year <- as.character(TIPMS$year)
+data$year <- as.character(data$year)
+data <- left_join(data, TIPMS, by=c("ccode" = "ccode", "year" = "year"))
+data$TIPMS<-as.numeric(data$TIPMS)
+
+#gross operating surplus total economy (AMECO):
+GOSTOTAL <- fread(here("data/GOSTOTAL.csv"), header=TRUE, dec=".")
+GOSTOTAL <- melt(GOSTOTAL, id.var="Country")
+GOSTOTAL$ccode <- countrycode(GOSTOTAL$Country, 'country.name', 'iso3c') #convert name codes to three letter country codes (iso3n)
+colnames(GOSTOTAL) <- c('Country', 'year', 'GOSTOTAL', 'ccode')
+GOSTOTAL <- select(GOSTOTAL, year, GOSTOTAL, ccode)
+GOSTOTAL$year <- as.character(GOSTOTAL$year)
+data$year <- as.character(data$year)
+data <- left_join(data, GOSTOTAL, by=c("ccode" = "ccode", "year" = "year"))
+data$GOSTOTAL<-as.numeric(data$GOSTOTAL)
+
+#other gross operating surplus (rest of the economy = total - corporations):
+data$GOSO = data$GOSTOTAL - data$GOSC
+
+#in relation to potential output:
+data$wages_PO <- data$wages/data$potentialoutput
+data$GOSC_PO <- data$GOSC/data$potentialoutput
+data$GOSO_PO <- data$GOSO/data$potentialoutput
+data$TIPMS_PO <- data$TIPMS/data$potentialoutput
+data$NPIROW_PO <- data$NPIROW/data$potentialoutput
+
+#in relation to GDP:
+data$wages_GDP <- data$wages/data$nominalGDP
+data$GOSC_GDP <- data$GOSC/data$nominalGDP
+
+#in relation population 15-64:
+data$wages_pop1564 <- data$wages/data$pop1564
+data$GOSC_pop1564 <- data$GOSC/data$pop1564
+
+
+#wages
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_wages_PO = lag(wages_PO))%>%
+  ungroup()
+data$log_lag_wages_PO <- log(data$lag_wages_PO)
+data$log_wages_PO <- log(data$wages_PO)
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(diff_log_wages_PO = log_wages_PO - lag(log_wages_PO)) %>% 
+  ungroup()
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(diff_wages_PO = wages_PO - lag(wages_PO)) %>% 
+  ungroup()
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_diff_log_wages_PO = lag(diff_log_wages_PO)) %>%
+  ungroup()
+
+#gross operating profits corporations:
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_GOSC_PO = lag(GOSC_PO))%>%
+  ungroup()
+data$log_lag_GOSC_PO <- log(data$lag_GOSC_PO)
+data$log_GOSC_PO <- log(data$GOSC_PO)
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(diff_log_GOSC_PO = log_GOSC_PO - lag(log_GOSC_PO)) %>% 
+  ungroup()
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(diff_GOSC_PO = GOSC_PO - lag(GOSC_PO)) %>% 
+  ungroup()
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_diff_log_GOSC_PO = lag(diff_log_GOSC_PO))%>%
+  ungroup()
+
+```
+
+20/03
+```{r}
+# 
+data$wages_nomPO <- data$wages/1000/data$NOMpotentialoutput
+data$GOSC_nomPO <- data$GOSC/1000/data$NOMpotentialoutput
+
+#wages
+data <- data %>%
+  dplyr::group_by(ccode) %>%
+  dplyr::mutate(lag_wages_nomPO = lag(wages_nomPO))%>%
+  ungroup()
+data$log_lag_wages_nomPO <- log(data$lag_wages_nomPO)
+data$log_wages_nomPO <- log(data$wages_nomPO)
+
+data <- data %>%
+  dplyr::group_by(ccode) %>%
+  dplyr::mutate(diff_log_wages_nomPO = log_wages_nomPO - lag(log_wages_nomPO)) %>%
+  ungroup()
+
+data <- data %>%
+  dplyr::group_by(ccode) %>%
+  dplyr::mutate(diff_wages_nomPO = wages_nomPO - lag(wages_nomPO)) %>%
+  ungroup()
+
+data <- data %>%
+  dplyr::group_by(ccode) %>%
+  dplyr::mutate(lag_diff_log_wages_nomPO = lag(diff_log_wages_nomPO)) %>%
+  ungroup()
+
+#gross operating profits corporations:
+data <- data %>%
+  dplyr::group_by(ccode) %>%
+  dplyr::mutate(lag_GOSC_nomPO = lag(GOSC_nomPO))%>%
+  ungroup()
+data$log_lag_GOSC_nomPO <- log(data$lag_GOSC_nomPO)
+data$log_GOSC_nomPO <- log(data$GOSC_nomPO)
+
+data <- data %>%
+  dplyr::group_by(ccode) %>%
+  dplyr::mutate(diff_log_GOSC_nomPO = log_GOSC_nomPO - lag(log_GOSC_nomPO)) %>%
+  ungroup()
+
+data <- data %>%
+  dplyr::group_by(ccode) %>%
+  dplyr::mutate(diff_GOSC_nomPO = GOSC_nomPO - lag(GOSC_nomPO)) %>%
+  ungroup()
+
+data <- data %>%
+  dplyr::group_by(ccode) %>%
+  dplyr::mutate(lag_diff_log_GOSC_nomPO = lag(diff_log_GOSC_nomPO))%>%
+  ungroup()
+
+
+data_l = pivot_longer(data, -(1:2), names_to = c("variable")) %>% dplyr::mutate(value = round(value, 9)) %>% dplyr::mutate(year = as.numeric(year))
+
+ggplot(data_l %>% filter(variable == "wages_PO" | variable == "wages_nomPO")) + geom_histogram(aes(x = value, fill = variable)) + facet_wrap(~variable)
+
+ggplot(data_l %>% filter(variable == "wages_nomPO")) + geom_histogram(aes(x = value, fill = variable))
+
+ggplot(data_l %>% filter(variable == "diff_log_wages_PO" | variable == "diff_log_wages_nomPO")) + geom_histogram(aes(x = value, fill = variable)) + facet_wrap(~variable)
+
+
+```
+
+```{r}
+# gross operating profits others (GOSO):
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_GOSO_PO = lag(GOSO_PO))%>%
+  ungroup()
+data$log_lag_GOSO_PO <- log(data$lag_GOSO_PO)
+data$log_GOSO_PO <- log(data$GOSO_PO)
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(diff_log_GOSO_PO = log_GOSO_PO - lag(log_GOSO_PO)) %>% 
+  ungroup()
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(diff_GOSO_PO = GOSO_PO - lag(GOSO_PO)) %>% 
+  ungroup()
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_diff_log_GOSO_PO = lag(diff_log_GOSO_PO))%>%
+  ungroup()
+
+# taxes on imports and production minus subsidies (TIPMS):
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_TIPMS_PO = lag(TIPMS_PO))%>%
+  ungroup()
+data$log_lag_TIPMS_PO <- log(data$lag_TIPMS_PO)
+data$log_TIPMS_PO <- log(data$TIPMS_PO)
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(diff_log_TIPMS_PO = log_TIPMS_PO - lag(log_TIPMS_PO)) %>% 
+  ungroup()
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(diff_TIPMS_PO = TIPMS_PO - lag(TIPMS_PO)) %>% 
+  ungroup()
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_diff_log_TIPMS_PO = lag(diff_log_TIPMS_PO))%>%
+  ungroup()
+
+# net primary income RoW (NPIROW):
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_NPIROW_PO = lag(NPIROW_PO))%>%
+  ungroup()
+data$log_lag_NPIROWS_PO <- log(data$lag_NPIROW_PO)
+data$log_NPIROW_PO <- log(data$NPIROW_PO)
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(diff_log_NPIROW_PO = log_NPIROW_PO - lag(log_NPIROW_PO)) %>% 
+  ungroup()
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(diff_NPIROW_PO = NPIROW_PO - lag(NPIROW_PO)) %>% 
+  ungroup()
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_diff_log_NPIROW_PO = lag(diff_log_NPIROW_PO))%>%
+  ungroup()
+
+
+#divide through population 15-64:
+
+#wages
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_wages_pop1564 = lag(wages_pop1564))%>%
+  ungroup()
+data$log_lag_wages_pop1564 <- log(data$lag_wages_pop1564)
+data$log_wages_pop1564 <- log(data$wages_pop1564)
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(diff_log_wages_pop1564 = log_wages_pop1564 - lag(log_wages_pop1564)) %>% 
+  ungroup()
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_diff_log_wages_pop1564 = lag(diff_log_wages_pop1564))%>%
+  ungroup()
+
+#gross operating surplus corporations:
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_GOSC_pop1564 = lag(GOSC_pop1564))%>%
+  ungroup()
+data$log_lag_GOSC_pop1564 <- log(data$lag_GOSC_pop1564)
+data$log_GOSC_pop1564 <- log(data$GOSC_pop1564)
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(diff_log_GOSC_pop1564 = log_GOSC_pop1564 - lag(log_GOSC_pop1564)) %>% 
+  ungroup()
+
+data <- data %>% 
+  dplyr::group_by(ccode) %>% 
+  dplyr::mutate(lag_diff_log_GOSC_pop1564 = lag(diff_log_GOSC_pop1564))%>%
+  ungroup()
+
+data$year = as.numeric(data$year)
+```
+
+23/03 NAWRU and Unemployment Rate
+```{r}
+NAWRUs_long <- gather(NAWRUs, year, NAWRU, 1:31)
+unemployment_rates_long <- gather(unemployment_rates, year, unemprate, 1:31)
+
+NAWRUs_long = NAWRUs_long %>% 
+  dplyr::mutate(year = as.numeric(year), NAWRU = as.numeric(NAWRU)) %>% 
+  filter(year <= 2020 & year >= 1995) 
+
+unemployment_rates_long = unemployment_rates_long %>% 
+  dplyr::mutate(year = as.numeric(year), unemprate = as.numeric(unemprate)) %>% 
+  filter(year <= 2020 & year >= 1995)
+
+data = data %>% left_join(NAWRUs_long, by = c("ccode", "year"))
+data = data %>% left_join(unemployment_rates_long, by = c("ccode", "year"))
+```
+
+24/03
+# NAWRU to POs, Unemprate to POs -- ignored but left just in case
+# NB: not divided by 1000 -- makes no sense, it is not expenditure
+```{r}
+# data$NAWRU_PO <- data$NAWRU/data$potentialoutput
+# data$NAWRU_nomPO <- data$NAWRU/data$NOMpotentialoutput
+# 
+# data$unemprate_PO <- data$unemprate/data$potentialoutput
+# data$unemprate_nomPO <- data$unemprate/data$NOMpotentialoutput
+# 
+# #REAL
+# # NAWRU
+# data <- data %>% 
+#   dplyr::group_by(ccode) %>% 
+#   dplyr::mutate(lag_NAWRU_PO = lag(NAWRU_PO))%>%
+#   ungroup()
+# data$log_lag_NAWRU_PO <- log(data$lag_NAWRU_PO)
+# data$log_NAWRU_PO <- log(data$NAWRU_PO)
+# 
+# data <- data %>% 
+#   dplyr::group_by(ccode) %>% 
+#   dplyr::mutate(diff_log_NAWRU_PO = log_NAWRU_PO - lag(log_NAWRU_PO)) %>% 
+#   ungroup()
+# 
+# data <- data %>% 
+#   dplyr::group_by(ccode) %>% 
+#   dplyr::mutate(diff_NAWRU_PO = NAWRU_PO - lag(NAWRU_PO)) %>% 
+#   ungroup()
+# 
+# data <- data %>% 
+#   dplyr::group_by(ccode) %>% 
+#   dplyr::mutate(lag_diff_log_NAWRU_PO = lag(diff_log_NAWRU_PO))%>%
+#   ungroup()
+# 
+# # unemployment rate
+# data <- data %>% 
+#   dplyr::group_by(ccode) %>% 
+#   dplyr::mutate(lag_unemprate_PO = lag(unemprate_PO))%>%
+#   ungroup()
+# data$log_lag_unemprate_PO <- log(data$lag_unemprate_PO)
+# data$log_unemprate_PO <- log(data$unemprate_PO)
+# 
+# data <- data %>% 
+#   dplyr::group_by(ccode) %>% 
+#   dplyr::mutate(diff_log_unemprate_PO = log_unemprate_PO - lag(log_unemprate_PO)) %>% 
+#   ungroup()
+# 
+# data <- data %>% 
+#   dplyr::group_by(ccode) %>% 
+#   dplyr::mutate(diff_unemprate_PO = unemprate_PO - lag(unemprate_PO)) %>% 
+#   ungroup()
+# 
+# data <- data %>% 
+#   dplyr::group_by(ccode) %>% 
+#   dplyr::mutate(lag_diff_log_unemprate_PO = lag(diff_log_unemprate_PO))%>%
+#   ungroup()
+# 
+# 
+# #NOMINAL
+# # NAWRU
+# data <- data %>% 
+#   dplyr::group_by(ccode) %>% 
+#   dplyr::mutate(lag_NAWRU_nomPO = lag(NAWRU_nomPO))%>%
+#   ungroup()
+# data$log_lag_NAWRU_nomPO <- log(data$lag_NAWRU_nomPO)
+# data$log_NAWRU_nomPO <- log(data$NAWRU_nomPO)
+# 
+# data <- data %>% 
+#   dplyr::group_by(ccode) %>% 
+#   dplyr::mutate(diff_log_NAWRU_nomPO = log_NAWRU_nomPO - lag(log_NAWRU_nomPO)) %>% 
+#   ungroup()
+# 
+# data <- data %>% 
+#   dplyr::group_by(ccode) %>% 
+#   dplyr::mutate(diff_NAWRU_nomPO = NAWRU_nomPO - lag(NAWRU_nomPO)) %>% 
+#   ungroup()
+# 
+# data <- data %>% 
+#   dplyr::group_by(ccode) %>% 
+#   dplyr::mutate(lag_diff_log_NAWRU_nomPO = lag(diff_log_NAWRU_nomPO))%>%
+#   ungroup()
+# 
+# # unemployment rate
+# data <- data %>% 
+#   dplyr::group_by(ccode) %>% 
+#   dplyr::mutate(lag_unemprate_nomPO = lag(unemprate_nomPO))%>%
+#   ungroup()
+# data$log_lag_unemprate_nomPO <- log(data$lag_unemprate_nomPO)
+# data$log_unemprate_nomPO <- log(data$unemprate_nomPO)
+# 
+# data <- data %>% 
+#   dplyr::group_by(ccode) %>% 
+#   dplyr::mutate(diff_log_unemprate_nomPO = log_unemprate_nomPO - lag(log_unemprate_nomPO)) %>% 
+#   ungroup()
+# 
+# data <- data %>% 
+#   dplyr::group_by(ccode) %>% 
+#   dplyr::mutate(diff_unemprate_nomPO = unemprate_nomPO - lag(unemprate_nomPO)) %>% 
+#   ungroup()
+# 
+# data <- data %>% 
+#   dplyr::group_by(ccode) %>% 
+#   dplyr::mutate(lag_diff_log_unemprate_nomPO = lag(diff_log_unemprate_nomPO))%>%
+#   ungroup()
+
+```
+
+```{r}
+# Unemprate to NAWRU
+data$unemprate_NAWRU = data$unemprate/data$NAWRU
+data$unemprate[data$year == "1995"]
+
+
+
+data <- data %>%
+  dplyr::group_by(ccode) %>%
+  dplyr::mutate(lag_unemprate_NAWRU = lag(unemprate_NAWRU))%>%
+  ungroup()
+data$log_lag_unemprate_NAWRU <- log(data$lag_unemprate_NAWRU)
+data$log_unemprate_NAWRU <- log(data$unemprate_NAWRU)
+
+data <- data %>%
+  dplyr::group_by(ccode) %>%
+  dplyr::mutate(diff_log_unemprate_NAWRU = log_unemprate_NAWRU - lag(log_unemprate_NAWRU)) %>%
+  ungroup()
+
+data <- data %>%
+  dplyr::group_by(ccode) %>%
+  dplyr::mutate(diff_unemprate_NAWRU = unemprate_NAWRU - lag(unemprate_NAWRU)) %>%
+  ungroup()
+
+data <- data %>%
+  dplyr::group_by(ccode) %>%
+  dplyr::mutate(lag_diff_log_unemprate_NAWRU = lag(diff_log_unemprate_NAWRU)) %>%
+  ungroup()
+
+```
+
+05/06 lag issue
+```{r, include=FALSE}
+lags_vector = select(data, matches("lag_diff")) %>% colnames()
+data_new = data
+
+data_new[data_new$year == "1995", lags_vector] <- NA
+
+check_1995 = data_new %>% filter(year == "1995") %>% select(ccode, year, matches("lag_diff"))
+```
+
+```{r}
+data[data$year == "1995", lags_vector] <- NA
+```
+
+still persistent as of 6/6
+
+
+
+Saving the data
+```{r}
+data_l = pivot_longer(data, -(1:2), names_to = c("variable")) %>% dplyr::mutate(value = round(value, 9)) %>% dplyr::mutate(year = as.numeric(year))
+
+write.csv(data, file = "out/data_res.csv")
+write.csv(data_l, file = "out/data_l_res.csv")
+
+check = data %>% select(ccode, MUsocial_PO)
+```
+
+additional checks; can be ignored
+```{r}
+# data_x = data_new %>%
+#   select(-matches("USA")) %>% 
+#   select(-matches("oilprice")) %>% 
+#   select(ccode, year, matches("lag_diff"))
+# 
+# # write_xlsx(data_new, use_zip64 = TRUE, path = "W:/00_POOL/00 PROJEKTE/Dezernat Z Stabilisatoren Vollbeschäftigung P2021-25/Cyclicality of government spending/R files/data/reserved ready data/glueviz excel/june5th_check.xlsx")
+# 
+# show_in_excel <- function(.data){
+#   tmp <- paste0(tempfile(), ".xlsx")
+#   writexl::write_xlsx(.data,tmp)
+#   browseURL(tmp)
+# }
+# 
+# # show_in_excel(data_x)
+```
+
+```{r}
+# coverage = data %>% 
+#   filter(!is.na(outputgap) & !is.na(social)) %>% 
+#   group_by(ccode) %>% 
+#   dplyr::summarize(from = min(year), to = max(year))
+# 
+# write_xlsx(coverage, "out/cyclicality_coverage.xlsx")
+# 
+# coverage_view = data %>% 
+#   filter(!is.na(outputgap) & !is.na(social)) %>% 
+#   select(c("ccode", "year", "outputgap") | matches("_nomPO")) %>%
+#   sample_n(10)
+# 
+# coverage_wide_OG = data %>% 
+#   pivot_wider(id_cols = ccode, names_sep = "_", values_from = outputgap, names_from = year)
+# 
+# coverage_wide_social = data %>% 
+#   pivot_wider(id_cols = ccode, names_sep = "_", values_from = social, names_from = year)
+# 
+# write_xlsx(coverage_wide_OG, "out/OG_cyclicality_coverage.xlsx")
+# write_xlsx(coverage_wide_social, "out/social_cyclicality_coverage.xlsx")
+```
+
+# DATA creation last line
+
