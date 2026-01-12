@@ -1,0 +1,612 @@
+---
+title: "Semi-Elasticity Models - Clean Version"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    code_folding: hide
+    theme: flatly
+    highlight: tango
+    fig_width: 10
+    fig_height: 6
+    keep_md: false
+---
+
+# Overview
+
+This document estimates semi-elasticities of government spending components using three econometric approaches:
+1. **ARIMA models** - Time series models with AR(1) errors
+2. **IV regression** - Instrumental variable regression using exports as instrument
+3. **OLS regression** - Standard ordinary least squares
+
+The analysis is performed for multiple specifications:
+- **nomPO**: Nominal potential output
+- **PO**: Real potential output  
+- **pop1564**: Population-based specification (working age population)
+
+---
+
+# Setup and Data Loading
+
+```{r setup, include=FALSE}
+# Suppress code output for cleaner HTML
+knitr::opts_chunk$set(
+  echo = FALSE,           # Don't show code
+  warning = FALSE,        # Suppress warnings
+  message = FALSE,        # Suppress messages
+  results = 'hide',       # Hide results by default
+  fig.width = 10,
+  fig.height = 6
+)
+
+# Load required libraries
+library(dplyr)
+library(tidyr)
+library(tibble)
+library(stringr)
+library(forecast)
+library(ivreg)
+library(writexl)
+library(DT)
+library(htmltools)
+library(knitr)
+
+# Helper function
+'%!in%' <- function(x,y)!('%in%'(x,y))
+```
+
+```{r load-data, include=FALSE}
+# Define dependent variables
+Dvariable_list <- c("health", "social", "MUsocial", "familychildren", "housing", 
+                    "oldage", "sicknessdisability", "survivors", 
+                    "unemployment", "unemprate_NAWRU", 
+                    "wages", "GOSC")
+
+dvarlist_tech <- Dvariable_list
+
+# Define countries of interest
+country_order <- c("AUT", "DEU", "POL", "CZE",
+                  "SWE", "DNK", "FRA", "ITA",
+                  "ROU", "ESP", "GRC")
+
+# Load data
+data <- read.csv(file = "out/data_res.csv", row.names = 1)
+data <- data[order(data$ccode),]
+```
+
+---
+
+# Core Analysis Functions
+
+## ARIMA Model Function
+
+Estimates ARIMA(1,0,0) models for each country and dependent variable.
+
+```{r arima-function, include=FALSE}
+arima_countries_table <- function(type_choice = "nomPO", 
+                                  Dvariable_list = dvarlist_tech) {
+  # Filter data to countries of interest
+  data_filtered <- filter(data, ccode %in% country_order)
+  c_countries <- unique(data_filtered$ccode)
+  
+  # Adjust variable names based on specification type
+  for (y in 1:length(Dvariable_list)) {
+    var_name <- Dvariable_list[y]
+    if (var_name != "unemprate_NAWRU") {
+      Dvariable_list[y] <- str_c(var_name, "_", type_choice)
+    }
+  }
+  
+  # Initialize results matrices
+  sig_coef_count <- data.frame(
+    matrix(0, nrow = length(c_countries), ncol = length(Dvariable_list))
+  )
+  colnames(sig_coef_count) <- Dvariable_list
+  rownames(sig_coef_count) <- c_countries
+  
+  ljung_coef_count <- data.frame(
+    matrix(0, nrow = length(c_countries), ncol = length(Dvariable_list))
+  )
+  colnames(ljung_coef_count) <- Dvariable_list
+  rownames(ljung_coef_count) <- c_countries
+  
+  # Estimate models for each country
+  for (i in 1:length(c_countries)) {
+    data_c <- data_filtered %>% filter(ccode == c_countries[i])
+    
+    for (j in 1:length(Dvariable_list)) {
+      var_name <- Dvariable_list[j]
+      
+      # Prepare regressors based on specification
+      if (type_choice == "pop1564") {
+        # For pop1564, include population controls (0-14 and 65+)
+        X <- cbind(
+          data_c$diff_log_actpop_pop1564,
+          data_c[[paste0("log_lag_", var_name)]],
+          data_c$log_lag_actpop_pop1564,
+          data_c$diff_log_pop_0_14_pop1564,
+          data_c$diff_log_pop_65_pop1564
+        )
+      } else {
+        X <- cbind(
+          data_c$diff_log_outputgap,
+          data_c[[paste0("log_lag_", var_name)]],
+          data_c$log_lag_outputgap
+        )
+      }
+      
+      # Estimate ARIMA model
+      reg <- stats::arima(
+        data_c[[paste0("diff_log_", var_name)]], 
+        order = c(1,0,0), 
+        xreg = X, 
+        method = "CSS"
+      )
+      
+      # Ljung-Box test for residual autocorrelation
+      ljung_test <- checkresiduals(reg, plot = FALSE)
+      ljung_coef_count[c_countries[i], Dvariable_list[j]] <- ljung_test$p.value
+      
+      # Extract coefficients and standard errors
+      p_value <- (1 - pnorm(abs(reg$coef) / sqrt(diag(reg$var.coef)))) * 2
+      se <- sqrt(diag(vcov(reg)))
+      
+      # Format coefficient with significance stars
+      p_asterisk <- ifelse(
+        p_value["X1"] < 0.001, "***",
+        ifelse(p_value["X1"] < 0.01, "**",
+               ifelse(p_value["X1"] < 0.05, "*", ""))
+      )
+      
+      # Store formatted result
+      if (p_value["X1"] < 0.05) {
+        sig_coef_count[c_countries[i], Dvariable_list[j]] <- 
+          paste0(round(reg$coef["X1"], 2), p_asterisk, 
+                 "\n(", round(se["X1"], 2), ")")
+      } else {
+        sig_coef_count[c_countries[i], Dvariable_list[j]] <- 
+          paste0(round(reg$coef["X1"], 2), "\n(", round(se["X1"], 2), ")")
+      }
+    }
+  }
+  
+  # Return results to global environment
+  assign(paste0("arima_countries_", type_choice), sig_coef_count, envir = .GlobalEnv)
+  assign(paste0("LJUNG_arima_countries_", type_choice), ljung_coef_count, envir = .GlobalEnv)
+  
+  return(sig_coef_count)
+}
+```
+
+## IV Regression Function
+
+Estimates instrumental variable regressions using exports as instrument for output gap.
+
+```{r ivreg-function, include=FALSE}
+ivreg_countries_table <- function(type_choice = "nomPO", 
+                                  Dvariable_list = dvarlist_tech) {
+  # Filter data (exclude BGR due to data issues)
+  data_filtered <- filter(data, ccode != "BGR", ccode %in% country_order)
+  c_countries <- unique(data_filtered$ccode)
+  
+  # Adjust variable names
+  for (i in 1:length(Dvariable_list)) {
+    varname <- Dvariable_list[i]
+    if (varname != "unemprate_NAWRU") {
+      varname <- str_c(varname, "_", type_choice)
+    }
+    Dvariable_list[i] <- varname
+  }
+  
+  # Initialize results
+  sig_coef_count <- data.frame(
+    matrix(0, nrow = length(c_countries), ncol = length(Dvariable_list))
+  )
+  colnames(sig_coef_count) <- Dvariable_list
+  rownames(sig_coef_count) <- c_countries
+  
+  tests <- data.frame()
+  
+  # Estimate models for each country
+  for (i in 1:length(c_countries)) {
+    data_c <- data_filtered %>% filter(ccode == c_countries[i])
+    
+    for (j in 1:length(Dvariable_list)) {
+      # Prepare variables
+      x1 <- cbind(data_c[[paste0("log_lag_", Dvariable_list[j])]])
+      x2 <- cbind(data_c$log_lag_outputgap)
+      x3 <- cbind(data_c[[paste0("lag_diff_log_", Dvariable_list[j])]])
+      dvar <- cbind(data_c[[paste0("diff_log_", Dvariable_list[j])]])
+      instr <- cbind(data_c[[paste0("diff_log_exports_", type_choice)]])
+      pred <- cbind(data_c$diff_log_outputgap)
+      
+      # Adjust for pop1564 specification
+      popcontr1 <- NULL
+      popcontr2 <- NULL
+      if (type_choice == "pop1564") {
+        pred <- cbind(data_c$diff_log_actpop_pop1564)
+        x2 <- cbind(data_c$log_lag_actpop_pop1564)
+        popcontr1 <- cbind(data_c$diff_log_pop_0_14_pop1564)
+        popcontr2 <- cbind(data_c$diff_log_pop_65_pop1564)
+      }
+      
+      # Estimate IV regression (with population controls if pop1564)
+      if (type_choice == "pop1564") {
+        reg <- ivreg(dvar ~ pred + x1 + x2 + x3 + popcontr1 + popcontr2 | 
+                     instr + x1 + x2 + x3 + popcontr1 + popcontr2, 
+                     data = data_c)
+      } else {
+        reg <- ivreg(dvar ~ pred + x1 + x2 + x3 | instr + x1 + x2 + x3, 
+                     data = data_c)
+      }
+      
+      # Diagnostic tests (Wu-Hausman test)
+      summary_reg <- summary(reg)
+      diag_try <- summary_reg$diagnostics
+      diag_out <- as.data.frame(diag_try)
+      diag_out <- diag_out[-3,] %>% 
+        select(-df1, -df2) %>%
+        mutate(ccode = c_countries[i], 
+               model = paste0(Dvariable_list[j], type_choice)) %>%
+        filter(ccode %in% country_order)
+      diag_out <- diag_out[-1,]
+      tests <- rbind(tests, diag_out)
+      
+      # Extract coefficients with robust standard errors
+      coef <- coef(reg)
+      vcov_robust <- vcov(reg, type = "HC1")
+      se <- sqrt(diag(vcov_robust))
+      t_stat <- coef / se
+      p_value <- 2 * pt(-abs(t_stat), df = df.residual(reg))
+      
+      # Format and store results
+      if (p_value[2] < 0.05) {
+        coef_star <- ifelse(
+          p_value[2] < 0.001, "***",
+          ifelse(p_value[2] < 0.01, "**",
+                 ifelse(p_value[2] < 0.05, "*", ""))
+        )
+        coef_se <- paste0("\n(", round(se[2], 2), ")")
+        sig_coef_count[c_countries[i], Dvariable_list[j]] <- 
+          paste0(round(coef[2], 2), coef_star, coef_se)
+      } else {
+        coef_se <- paste0("\n(", round(se[2], 2), ")")
+        sig_coef_count[c_countries[i], Dvariable_list[j]] <- 
+          paste0(round(coef[2], 2), coef_se)
+      }
+    }
+  }
+  
+  # Return results
+  assign(paste0("ivreg_countries_", type_choice), sig_coef_count, envir = .GlobalEnv)
+  assign("ivreg_tests", tests, envir = .GlobalEnv)
+  
+  return(sig_coef_count)
+}
+```
+
+## OLS Regression Function
+
+Estimates standard OLS regressions for comparison.
+
+```{r ols-function, include=FALSE}
+OLS_countries_table <- function(type_choice = "nomPO", 
+                                Dvariable_list = dvarlist_tech) {
+  # Filter data
+  data_filtered <- filter(data, ccode != "BGR", ccode %in% country_order)
+  c_countries <- unique(data_filtered$ccode)
+  
+  # Adjust variable names
+  for (i in 1:length(Dvariable_list)) {
+    varname <- Dvariable_list[i]
+    if (varname != "unemprate_NAWRU") {
+      varname <- str_c(varname, "_", type_choice)
+    }
+    Dvariable_list[i] <- varname
+  }
+  
+  # Initialize results
+  sig_coef_count <- data.frame(
+    matrix(0, nrow = length(c_countries), ncol = length(Dvariable_list))
+  )
+  colnames(sig_coef_count) <- Dvariable_list
+  rownames(sig_coef_count) <- c_countries
+  
+  # Estimate models for each country
+  for (i in 1:length(c_countries)) {
+    data_c <- data_filtered %>% filter(ccode == c_countries[i])
+    
+    for (j in 1:length(Dvariable_list)) {
+      # Prepare variables
+      x1 <- cbind(data_c[[paste0("log_lag_", Dvariable_list[j])]])
+      x2 <- cbind(data_c$log_lag_outputgap)
+      x3 <- cbind(data_c[[paste0("lag_diff_log_", Dvariable_list[j])]])
+      dvar <- cbind(data_c[[paste0("diff_log_", Dvariable_list[j])]])
+      pred <- cbind(data_c$diff_log_outputgap)
+      
+      # Adjust for pop1564 specification
+      popcontr1 <- NULL
+      popcontr2 <- NULL
+      if (type_choice == "pop1564") {
+        pred <- cbind(data_c$diff_log_actpop_pop1564)
+        x2 <- cbind(data_c$log_lag_actpop_pop1564)
+        popcontr1 <- cbind(data_c$diff_log_pop_0_14_pop1564)
+        popcontr2 <- cbind(data_c$diff_log_pop_65_pop1564)
+      }
+      
+      # Estimate OLS regression (with population controls if pop1564)
+      if (type_choice == "pop1564") {
+        reg <- lm(dvar ~ pred + x1 + x2 + x3 + popcontr1 + popcontr2, 
+                  data = data_c)
+      } else {
+        reg <- lm(dvar ~ pred + x1 + x2 + x3, data = data_c)
+      }
+      
+      # Extract coefficients
+      coef <- coef(reg)
+      vcov_reg <- vcov(reg)
+      se <- sqrt(diag(vcov_reg))
+      t_stat <- coef / se
+      p_value <- 2 * pt(-abs(t_stat), df = df.residual(reg))
+      
+      # Format and store results
+      if (p_value[2] < 0.05) {
+        coef_star <- ifelse(
+          p_value[2] < 0.001, "***",
+          ifelse(p_value[2] < 0.01, "**",
+                 ifelse(p_value[2] < 0.05, "*", ""))
+        )
+        coef_se <- paste0("\n(", round(se[2], 2), ")")
+        sig_coef_count[c_countries[i], Dvariable_list[j]] <- 
+          paste0(round(coef[2], 2), coef_star, coef_se)
+      } else {
+        coef_se <- paste0("\n(", round(se[2], 2), ")")
+        sig_coef_count[c_countries[i], Dvariable_list[j]] <- 
+          paste0(round(coef[2], 2), coef_se)
+      }
+    }
+  }
+  
+  # Return results
+  assign(paste0("OLS_countries_", type_choice), sig_coef_count, envir = .GlobalEnv)
+  
+  return(sig_coef_count)
+}
+```
+
+---
+
+# Run Analysis
+
+```{r run-analysis, include=FALSE}
+# Run ARIMA models
+cat("Running ARIMA models...\n")
+arima_countries_table("nomPO")
+arima_countries_table("PO")
+arima_countries_table("pop1564")
+
+# Run IV regressions
+cat("Running IV regressions...\n")
+ivreg_countries_table("nomPO")
+ivreg_countries_table("PO")
+ivreg_countries_table("pop1564")
+
+# Run OLS regressions
+cat("Running OLS regressions...\n")
+OLS_countries_table("nomPO")
+OLS_countries_table("PO")
+OLS_countries_table("pop1564")
+```
+
+---
+
+# Results Summary
+
+## Combine Results
+
+```{r combine-results, include=FALSE}
+# Prepare results for display
+prepare_results_table <- function() {
+  # Get all result tables
+  arima_nom <- arima_countries_nomPO
+  arima_real <- arima_countries_PO
+  arima_pop <- arima_countries_pop1564
+  ivreg_nom <- ivreg_countries_nomPO
+  ivreg_real <- ivreg_countries_PO
+  ivreg_pop <- ivreg_countries_pop1564
+  ols_nom <- OLS_countries_nomPO
+  ols_real <- OLS_countries_PO
+  ols_pop <- OLS_countries_pop1564
+  
+  # Add model and index identifiers
+  add_identifiers <- function(df, model_type, index_type) {
+    df <- df %>%
+      rownames_to_column(var = "ccode") %>%
+      mutate(model = model_type, index = index_type)
+    return(df)
+  }
+  
+  # Combine all results
+  results_combined <- bind_rows(
+    add_identifiers(arima_nom, "arima", "nom"),
+    add_identifiers(arima_real, "arima", "real"),
+    add_identifiers(arima_pop, "arima", "pop"),
+    add_identifiers(ivreg_nom, "ivreg", "nom"),
+    add_identifiers(ivreg_real, "ivreg", "real"),
+    add_identifiers(ivreg_pop, "ivreg", "pop"),
+    add_identifiers(ols_nom, "OLS", "nom"),
+    add_identifiers(ols_real, "OLS", "real"),
+    add_identifiers(ols_pop, "OLS", "pop")
+  )
+  
+  return(results_combined)
+}
+
+results_all <- prepare_results_table()
+```
+
+## Summary Tables
+
+### ARIMA Results
+
+```{r summary-arima, echo=FALSE, results='asis'}
+# Display ARIMA results for real output gap specification
+summary_arima <- results_all %>%
+  filter(model == "arima", index == "real") %>%
+  head(11)  # Show all countries
+
+# Select only the first 13 columns (Country + 12 variables)
+# Filter to show only PO specification columns
+po_cols <- grep("_PO$", names(summary_arima), value = TRUE)
+if(length(po_cols) > 0) {
+  summary_arima <- summary_arima[, c("ccode", po_cols[1:min(12, length(po_cols))]), drop = FALSE]
+} else {
+  # Fallback: select first 13 columns
+  summary_arima <- summary_arima[, 1:min(13, ncol(summary_arima)), drop = FALSE]
+}
+
+# Rename columns
+colnames(summary_arima) <- c(
+  "Country", "Health", "Social", "Social*", "Family", "Housing",
+  "Old Age", "Sickness", "Survivors", "Unemp. Spend", "Unemp. Rate",
+  "Wages", "GOSC"
+)[1:ncol(summary_arima)]
+
+# Create interactive table with DT
+datatable(summary_arima,
+          caption = htmltools::tags$caption(
+            style = 'caption-side: top; text-align: center;',
+            'ARIMA Model Results - Real Output Gap Specification'
+          ),
+          options = list(
+            pageLength = 15,
+            scrollX = TRUE,
+            dom = 'Bfrtip',
+            ordering = TRUE
+          ),
+          rownames = FALSE,
+          filter = 'top',
+          class = 'cell-border stripe hover'
+)
+```
+
+### IV Regression Results
+
+```{r summary-ivreg, echo=FALSE, results='asis'}
+# Display IV regression results
+summary_ivreg <- results_all %>%
+  filter(model == "ivreg", index == "real") %>%
+  head(11)
+
+# Select only PO specification columns
+po_cols <- grep("_PO$", names(summary_ivreg), value = TRUE)
+if(length(po_cols) > 0) {
+  summary_ivreg <- summary_ivreg[, c("ccode", po_cols[1:min(12, length(po_cols))]), drop = FALSE]
+} else {
+  summary_ivreg <- summary_ivreg[, 1:min(13, ncol(summary_ivreg)), drop = FALSE]
+}
+
+# Rename columns
+colnames(summary_ivreg) <- c(
+  "Country", "Health", "Social", "Social*", "Family", "Housing",
+  "Old Age", "Sickness", "Survivors", "Unemp. Spend", "Unemp. Rate",
+  "Wages", "GOSC"
+)[1:ncol(summary_ivreg)]
+
+# Create interactive table
+datatable(summary_ivreg,
+          caption = htmltools::tags$caption(
+            style = 'caption-side: top; text-align: center;',
+            'IV Regression Results - Real Output Gap Specification'
+          ),
+          options = list(
+            pageLength = 15,
+            scrollX = TRUE,
+            dom = 'Bfrtip',
+            ordering = TRUE
+          ),
+          rownames = FALSE,
+          filter = 'top',
+          class = 'cell-border stripe hover'
+)
+```
+
+### OLS Results
+
+```{r summary-ols, echo=FALSE, results='asis'}
+# Display OLS results
+summary_ols <- results_all %>%
+  filter(model == "OLS", index == "real") %>%
+  head(11)
+
+# Select only PO specification columns
+po_cols <- grep("_PO$", names(summary_ols), value = TRUE)
+if(length(po_cols) > 0) {
+  summary_ols <- summary_ols[, c("ccode", po_cols[1:min(12, length(po_cols))]), drop = FALSE]
+} else {
+  summary_ols <- summary_ols[, 1:min(13, ncol(summary_ols)), drop = FALSE]
+}
+
+# Rename columns
+colnames(summary_ols) <- c(
+  "Country", "Health", "Social", "Social*", "Family", "Housing",
+  "Old Age", "Sickness", "Survivors", "Unemp. Spend", "Unemp. Rate",
+  "Wages", "GOSC"
+)[1:ncol(summary_ols)]
+
+# Create interactive table
+datatable(summary_ols,
+          caption = htmltools::tags$caption(
+            style = 'caption-side: top; text-align: center;',
+            'OLS Regression Results - Real Output Gap Specification'
+          ),
+          options = list(
+            pageLength = 15,
+            scrollX = TRUE,
+            dom = 'Bfrtip',
+            ordering = TRUE
+          ),
+          rownames = FALSE,
+          filter = 'top',
+          class = 'cell-border stripe hover'
+)
+```
+
+---
+
+# Export Results
+
+```{r export-results, include=FALSE, eval=FALSE}
+export_to_excel <- function() {
+
+  results_list <- list(
+    ARIMA_nomPO = arima_countries_nomPO,
+    ARIMA_PO = arima_countries_PO,
+    ARIMA_pop1564 = arima_countries_pop1564,
+    IVREG_nomPO = ivreg_countries_nomPO,
+    IVREG_PO = ivreg_countries_PO,
+    IVREG_pop1564 = ivreg_countries_pop1564,
+    OLS_nomPO = OLS_countries_nomPO,
+    OLS_PO = OLS_countries_PO,
+    OLS_pop1564 = OLS_countries_pop1564
+  )
+
+  results_list <- lapply(results_list, function(df) {
+    df <- as.data.frame(df)
+    df <- tibble::rownames_to_column(df, "ccode")
+    df
+  })
+
+  write_xlsx(results_list, "stargazer/results_summary.xlsx")
+}
+export_to_excel()
+```
+---
+
+# Notes
+
+- **Significance levels**: \* p<0.05, \*\* p<0.01, \*\* p<0.001
+- **Standard errors** in parentheses below coefficients
+- **ARIMA models** use CSS estimation method
+- **IV regressions** use exports as instrument for output gap
+- **Robust standard errors** (HC1) used for IV regressions
